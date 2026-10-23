@@ -1,145 +1,66 @@
-# LiDAR Weather Hallucination Network
+# LiDAR Weather Corruption Toolkit
 
-> Deep learning model that reconstructs clean LiDAR point clouds from rain, fog, and snow-corrupted sensor data — enabling autonomous vehicles to literally "see through" bad weather.
+A small command-line utility for creating deterministic, synthetic weather-style perturbations of one LiDAR point cloud at a time. It reads user-supplied NumPy arrays or KITTI Velodyne scans, writes a corrupted scan, and can save a JSON manifest with input/output hashes and point counts.
 
-[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0-orange)](https://pytorch.org)
+This repository provides a data-pipeline stress tool. It does not contain a trained neural network, reconstruct clean points, or establish autonomous-driving safety. Its procedural perturbations are not calibrated to real rain, fog, or snow sensors.
 
----
+## Requirements
 
-## The Problem
+- Python 3.10 or newer
+- NumPy
 
-LiDAR is the backbone sensor for autonomous vehicles. But weather particles cause:
-- **Rain**: 50-70% of beams hit water droplets → phantom obstacles
-- **Fog**: signal attenuation + backscatter → reduced range
-- **Snow**: mixed dense scatter + surface reflectance loss → fragmented point clouds
+Install dependencies:
 
-Current approaches: sensor fusion with radar/camera. But when LiDAR data itself is degraded, detection and planning models fail.
-
-**This project builds a dedicated neural network to "hallucinate" what the clean LiDAR would have seen.**
-
----
-
-## Model: Weather-Hallucination-Net
-
-```
-Corrupted Point Cloud
-    ↓
-Voxelization (0.2m grid)
-    ↓
-3D Sparse CNN Encoder   ──┐
-    ↓                     │  Skip Connections
-U-Net Bottleneck          │
-    ↓ ←───────────────────┘
-3D Sparse CNN Decoder
-    ↓
-Clean Point Cloud Reconstruction
-    ↓
-Occupancy Grid / BEV Map
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-**Training objective:** Combined Chamfer Distance + Focal Loss + Density Regularization
+## Input formats
 
----
+- `.npy`: a numeric array shaped `(N, 3+)`, with XYZ in the first three columns. Additional columns such as intensity are preserved for original returns.
+- `.bin`: a KITTI Velodyne scan of little-endian float32 `(x, y, z, intensity)` records.
 
-## Datasets
+Non-finite values and malformed KITTI records are rejected. One frame is loaded into memory at a time.
 
-| Dataset | Weather Types | Format |
-|---------|--------------|--------|
-| **nuScenes-Weather** (synthetic) | Rain, fog via rendering | 32-beam LiDAR |
-| **KITTI-360** | Natural weather annotations | Velodyne HDL-64 |
-| **SemanticKITTI** | Labeled weather conditions | 64-beam |
-| **Synthetic (this repo)** | Procedural weather corruption | Generated |
+## Use with a real scan
 
-Use `src/weather_simulator.py` to synthetically corrupt clean LiDAR data:
-```bash
-python -m src.weather_simulator \
-    --input data/nuScenes/clean/ \
-    --weather rain \
-    --intensity 0.7 \
-    --output data/nuScenes/rainy/
+Create a rain-style stress input from a KITTI scan and save a reproducibility manifest:
+
+```powershell
+python -m src.weather_simulator `
+  --input "data/000001.bin" `
+  --weather rain `
+  --intensity 0.6 `
+  --seed 17 `
+  --output "data/perturbed/000001-rain.bin" `
+  --report "data/perturbed/000001-rain.json"
 ```
 
----
+Use `--weather fog` or `--weather snow` for the other perturbations. The same input, weather, intensity, and seed produce the same generated points. Existing output files are protected by default; pass `--overwrite` to replace them.
 
-## Usage
+For an array saved with NumPy:
 
-### Train
-
-```bash
-python -m src.train \
-    --dataset nuscenes \
-    --weather-type rain \
-    --batch-size 4 \
-    --epochs 80 \
-    --lr 0.001 \
-    --output checkpoints/lidar_hallucination.pt
+```powershell
+python -m src.weather_simulator --input "scan.npy" --weather fog --output "scan-fog.npy"
 ```
 
-### Evaluate
+Run `python -m src.weather_simulator --help` for all options.
 
-```bash
-python -m src.evaluate \
-    --model checkpoints/lidar_hallucination.pt \
-    --dataset nuscenes \
-    --split val \
-    --metrics chamfer,iou,ap
-```
+## What each scenario changes
 
-### Visualize Before/After
+- **Rain:** adds synthetic returns sampled within the input scan's XYZ bounds.
+- **Fog:** drops more returns as horizontal range increases and adds a small amount of bounded clutter.
+- **Snow:** randomly drops a small share of returns and adds bounded clutter.
 
-```bash
-python -m src.visualize \
-    --input data/samples/corrupted.pcd \
-    --model checkpoints/lidar_hallucination.pt \
-    --output vis_output/
-```
+The returned points are procedural. The parameters do not represent a measured weather intensity, and the generated clouds should not be used as ground truth for sensor performance or vehicle safety claims.
 
----
+## Manifest
 
-## Metrics (Expected Performance)
+When `--report` is provided, the JSON file records the weather parameters, seed, point counts, and SHA-256 hashes for the input and output files. It also records the simulation limitations so downstream users do not mistake a generated scan for sensor evidence.
 
-| Condition | Raw CD | Hallucination-Net CD | Detection AP Improvement |
-|-----------|--------|----------------------|--------------------------|
-| Clean | 0.0 | 0.0 | baseline |
-| Heavy Rain | 0.42 | **0.13** | +22.1 mAP |
-| Dense Fog | 0.67 | **0.21** | +31.4 mAP |
-| Snow Storm | 0.39 | **0.11** | +19.8 mAP |
+## Project files
 
----
+- `src/weather_simulator.py` — validated corruption functions and CLI.
+- `requirements.txt` — NumPy runtime dependency.
 
-## Project Structure
-
-```
-lidar-weather-hallucination/
-├── src/
-│   ├── model.py             # 3D Sparse U-Net architecture
-│   ├── voxelization.py      # Point cloud voxelization utilities
-│   ├── weather_simulator.py # Synthetic rain/fog/snow corruption
-│   ├── dataset.py           # PyTorch Dataset classes
-│   ├── train.py             # Training loop with Chamfer loss
-│   ├── evaluate.py          # CD, IoU, 3D mAP metrics
-│   └── visualize.py         # Open3D point cloud visualization
-├── data/
-├── checkpoints/
-├── requirements.txt
-├── README.md
-├── LICENSE
-└── .gitignore
-```
-
----
-
-## References
-
-- **SparseConvNet** (Liu et al., 2018) — 3D sparse convolution
-- **MMDetection3D** — OpenMMLab LiDAR detection framework
-- **nuScenes** dataset (Caesar et al., 2020)
-- **Rain-Scattering** physics model (Sigg et al., 2016)
-
----
-
-## License
-
-MIT © [sparkx313](https://github.com/sparkx313)
+There is no training pipeline or pretrained model in this repository.
