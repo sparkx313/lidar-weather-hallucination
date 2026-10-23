@@ -1,1 +1,1 @@
-"""lidar-weather-hallucination package."""
+"""LiDAR point-cloud corruption utilities."""
